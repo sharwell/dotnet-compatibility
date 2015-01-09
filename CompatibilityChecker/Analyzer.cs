@@ -201,6 +201,23 @@
                     MethodDefinition newMethodDefinition = newMetadata.GetMethodDefinition(methodMapping.Target);
                     if (methodDefinition.Attributes != newMethodDefinition.Attributes)
                         throw new NotImplementedException("Attributes of publicly-visible method changed.");
+
+                    // check parameter names
+                    foreach (var parameterHandle in methodDefinition.GetParameters())
+                    {
+                        Mapping<ParameterHandle> parameterMapping = _referenceToNewMapping.MapParameter(parameterHandle);
+                        if (parameterMapping.Target.IsNil)
+                            throw new InvalidOperationException();
+
+                        Parameter referenceParameter = referenceMetadata.GetParameter(parameterHandle);
+                        Parameter newParameter = newMetadata.GetParameter(parameterMapping.Target);
+                        string referenceParameterName = referenceMetadata.GetString(referenceParameter.Name);
+                        if (!newMetadata.StringComparer.Equals(newParameter.Name, referenceParameterName))
+                        {
+                            _logger.Report(ParameterMustNotBeRenamed.CreateMessage());
+                            continue;
+                        }
+                    }
                 }
 
                 // If the type is an interface, additionally make sure the number of methods did not change.
