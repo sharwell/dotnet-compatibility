@@ -90,11 +90,11 @@
                 if (!baseTypeHandle.IsNil)
                 {
                     Handle newBaseTypeHandle = newTypeDefinition.BaseType;
-                    if (newBaseTypeHandle.IsNil)
-                        throw new NotImplementedException("Base type changed.");
-
-                    if (baseTypeHandle.Kind != newBaseTypeHandle.Kind)
-                        throw new NotImplementedException("Base type changed.");
+                    if (newBaseTypeHandle.IsNil || baseTypeHandle.Kind != newBaseTypeHandle.Kind)
+                    {
+                        _logger.Report(BaseTypeMustNotBeRemoved.CreateMessage());
+                        continue;
+                    }
 
                     switch (baseTypeHandle.Kind)
                     {
@@ -138,7 +138,9 @@
                     }
 
                     if (!foundMatchingInterface)
-                        throw new NotImplementedException("Implemented interface was removed from a type.");
+                    {
+                        _logger.Report(InterfaceImplementationMustNotBeRemoved.CreateMessage());
+                    }
                 }
 
                 // check fields
@@ -151,10 +153,8 @@
                     Mapping<FieldDefinitionHandle> fieldMapping = _referenceToNewMapping.MapFieldDefinition(fieldDefinitionHandle);
                     if (fieldMapping.Target.IsNil)
                     {
-                        if (fieldMapping.CandidateTargets.IsDefaultOrEmpty)
-                            throw new NotImplementedException(string.Format("Publicly-visible field '{0}' was renamed or removed.", GetMetadataName(referenceMetadata, fieldDefinition)));
-
-                        throw new NotImplementedException();
+                        _logger.Report(MemberMustNotBeRemoved.CreateMessage(MemberTypes.Field, GetMetadataName(referenceMetadata, fieldDefinition)));
+                        continue;
                     }
 
                     FieldDefinition newFieldDefinition = newMetadata.GetFieldDefinition(fieldMapping.Target);
@@ -162,7 +162,10 @@
                         throw new NotImplementedException("Attributes of publicly-visible field changed.");
 
                     if (!IsSameFieldSignature(referenceMetadata, newMetadata, referenceMetadata.GetSignature(fieldDefinition), newMetadata.GetSignature(newFieldDefinition)))
-                        throw new NotImplementedException("Signature of publicly-accessible field changed.");
+                    {
+                        _logger.Report(SignatureTypeMustNotBeChanged.CreateMessage());
+                        continue;
+                    }
 
                     if (!fieldDefinition.GetDefaultValue().IsNil)
                     {
@@ -207,9 +210,6 @@
                         newMethodDefinitions.Add(newMethodDefinition);
                     }
 
-                    if (newMethodDefinitions.Count == 0)
-                        throw new NotImplementedException(string.Format("Publicly-visible method '{0}' was renamed or removed.", GetMetadataName(referenceMetadata, methodDefinition)));
-
                     bool foundMethodDefinition = false;
                     foreach (var newMethodDefinition in newMethodDefinitions)
                     {
@@ -226,14 +226,19 @@
                     }
 
                     if (!foundMethodDefinition)
-                        throw new NotImplementedException(string.Format("Publicly-visible method '{0}' was renamed or removed.", GetMetadataName(referenceMetadata, methodDefinition)));
+                    {
+                        _logger.Report(MemberMustNotBeRemoved.CreateMessage(MemberTypes.Method, GetMetadataName(referenceMetadata, methodDefinition)));
+                        continue;
+                    }
                 }
 
                 // If the type is an interface, additionally make sure the number of methods did not change.
                 if ((typeDefinition.Attributes & TypeAttributes.ClassSemanticsMask) == TypeAttributes.Interface)
                 {
                     if (typeDefinition.GetMethods().Count != newTypeDefinition.GetMethods().Count)
-                        throw new NotImplementedException("Method was added to an interface.");
+                    {
+                        _logger.Report(InterfaceMembersMustNotBeAdded.CreateMessage());
+                    }
                 }
 
                 // check events
@@ -245,14 +250,20 @@
 
                     Mapping<EventDefinitionHandle> eventDefinitionMapping = _referenceToNewMapping.MapEventDefinition(eventDefinitionHandle);
                     if (eventDefinitionMapping.Target.IsNil)
-                        throw new NotImplementedException(string.Format("Publicly-visible event '{0}' was renamed or removed.", GetMetadataName(referenceMetadata, eventDefinition, typeDefinition)));
+                    {
+                        _logger.Report(MemberMustNotBeRemoved.CreateMessage(MemberTypes.Event, GetMetadataName(referenceMetadata, eventDefinition, typeDefinition)));
+                        continue;
+                    }
 
                     EventDefinition newEventDefinition = newMetadata.GetEventDefinition(eventDefinitionMapping.Target);
                     if (eventDefinition.Attributes != newEventDefinition.Attributes)
                         throw new NotImplementedException("Attributes of publicly-visible event changed.");
 
                     if (!IsSameType(referenceMetadata, newMetadata, eventDefinition.Type, newEventDefinition.Type))
-                        throw new NotImplementedException("Signature of publicly-visible event changed.");
+                    {
+                        _logger.Report(SignatureTypeMustNotBeChanged.CreateMessage());
+                        continue;
+                    }
 
                     EventAccessors eventAccessors = eventDefinition.GetAccessors();
 
@@ -346,7 +357,10 @@
                     }
 
                     if (newPropertyDefinitionHandle.IsNil)
-                        throw new NotImplementedException(string.Format("Publicly-visible property '{0}' was renamed or removed.", GetMetadataName(referenceMetadata, propertyDefinition, typeDefinition)));
+                    {
+                        _logger.Report(MemberMustNotBeRemoved.CreateMessage(MemberTypes.Property, GetMetadataName(referenceMetadata, propertyDefinition, typeDefinition)));
+                        continue;
+                    }
 
                     PropertyDefinition newPropertyDefinition = newMetadata.GetPropertyDefinition(newPropertyDefinitionHandle);
                     if (propertyDefinition.Attributes != newPropertyDefinition.Attributes)
@@ -355,7 +369,10 @@
                     PropertySignature referenceSignature = referenceMetadata.GetSignature(propertyDefinition);
                     PropertySignature newSignature = newMetadata.GetSignature(newPropertyDefinition);
                     if (!IsSamePropertySignature(referenceMetadata, newMetadata, referenceSignature, newSignature))
-                        throw new NotImplementedException("Signature of publicly-visible property changed.");
+                    {
+                        _logger.Report(SignatureTypeMustNotBeChanged.CreateMessage());
+                        continue;
+                    }
 
                     PropertyAccessors propertyAccessors = propertyDefinition.GetAccessors();
                     if (!propertyAccessors.Getter.IsNil)
@@ -417,13 +434,14 @@
             if (!string.Equals(referenceName, newName, StringComparison.Ordinal))
                 _logger.Report(AssemblyNameMustNotBeChanged.CreateMessage());
 
-            string referenceCulture = referenceMetadata.GetString(referenceAssemblyDefinition.Culture);
-            string newCulture = referenceMetadata.GetString(newAssemblyDefinition.Culture);
-            if (!string.Equals(referenceCulture, newCulture, StringComparison.Ordinal))
-                throw new NotImplementedException("Assembly culture changed.");
-
             if (!referenceAssemblyDefinition.PublicKey.IsNil)
             {
+                // culture is only checked if the reference assembly has a strong name
+                string referenceCulture = referenceMetadata.GetString(referenceAssemblyDefinition.Culture);
+                string newCulture = referenceMetadata.GetString(newAssemblyDefinition.Culture);
+                if (!string.Equals(referenceCulture, newCulture, StringComparison.Ordinal))
+                    throw new NotImplementedException("Assembly culture changed.");
+
                 // adding a public key is supported, but removing or changing it is not.
                 var referencePublicKey = referenceMetadata.GetBlobContent(referenceAssemblyDefinition.PublicKey);
                 var newPublicKey = newMetadata.GetBlobContent(newAssemblyDefinition.PublicKey);
@@ -489,10 +507,18 @@
         {
             Mapping<TypeDefinitionHandle> mappedTypeDefinitionHandle = _referenceToNewMapping.MapTypeDefinition(referenceBaseTypeHandle);
             if (mappedTypeDefinitionHandle.Target.IsNil)
-                throw new NotImplementedException("Base type no longer in assembly.");
+            {
+                // base type no longer in assembly
+                _logger.Report(BaseTypeMustNotBeRemoved.CreateMessage());
+                return;
+            }
 
             if (mappedTypeDefinitionHandle.Target != newBaseTypeDefinitionHandle)
-                throw new NotImplementedException("Base type changed.");
+            {
+                // base type changed
+                _logger.Report(BaseTypeMustNotBeRemoved.CreateMessage());
+                return;
+            }
         }
 
         private void CheckBaseType(MetadataReader referenceMetadata, MetadataReader newMetadata, TypeReference referenceBaseTypeReference, TypeReference newBaseTypeReference)
@@ -502,17 +528,26 @@
             string referenceName = referenceMetadata.GetString(referenceBaseTypeReference.Name);
             string newName = newMetadata.GetString(newBaseTypeReference.Name);
             if (!string.Equals(referenceName, newName, StringComparison.Ordinal))
-                throw new NotImplementedException("Base type changed.");
+            {
+                // base type changed
+                _logger.Report(BaseTypeMustNotBeRemoved.CreateMessage());
+                return;
+            }
 
             string referenceNamespace = referenceMetadata.GetString(referenceBaseTypeReference.Namespace);
             string newNamespace = newMetadata.GetString(newBaseTypeReference.Namespace);
             if (!string.Equals(referenceNamespace, newNamespace, StringComparison.Ordinal))
-                throw new NotImplementedException("Base type changed.");
+            {
+                // base type changed
+                _logger.Report(BaseTypeMustNotBeRemoved.CreateMessage());
+                return;
+            }
         }
 
         private void CheckBaseType(MetadataReader referenceMetadata, MetadataReader newMetadata, TypeSpecification referenceBaseTypeSpecification, TypeSpecification newBaseTypeSpecification)
         {
-            Console.WriteLine("Base type checking for TypeSpecification not yet implemented.");
+            // Base type checking for TypeSpecification not yet implemented
+            _logger.Report(BaseTypeMustNotBeRemoved.CreateMessage());
         }
 
         private bool IsSameType(MetadataReader referenceMetadata, MetadataReader newMetadata, Handle referenceTypeHandle, Handle newTypeHandle)

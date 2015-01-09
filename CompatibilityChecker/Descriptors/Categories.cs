@@ -5,5 +5,7 @@
         internal const string Assembly = nameof(Assembly);
 
         internal const string Type = nameof(Type);
+
+        internal const string Member = nameof(Member);
     }
 }
