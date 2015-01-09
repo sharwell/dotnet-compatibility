@@ -5,24 +5,38 @@
     using System.Reflection;
     using System.Reflection.PortableExecutable;
     using System.Security.Cryptography;
+    using System.Xml.Linq;
     using CompatibilityChecker;
     using File = System.IO.File;
+    using Path = System.IO.Path;
 
     internal static class TestUtility
     {
         public static ReadOnlyCollection<Message> AnalyzeAssemblies(string referenceAssemblyFile, string newAssemblyFile)
         {
+            XDocument referenceDocumentation = LoadDocumentationForAssembly(referenceAssemblyFile);
+            XDocument newDocumentation = LoadDocumentationForAssembly(newAssemblyFile);
+
             using (PEReader referenceAssembly = new PEReader(File.OpenRead(referenceAssemblyFile)))
             {
                 using (PEReader newAssembly = new PEReader(File.OpenRead(newAssemblyFile)))
                 {
                     TestMessageLogger logger = new TestMessageLogger();
-                    Analyzer analyzer = new Analyzer(referenceAssembly, newAssembly, logger);
+                    Analyzer analyzer = new Analyzer(referenceAssembly, referenceDocumentation, newAssembly, newDocumentation, logger);
                     analyzer.Run();
 
                     return logger.RawMessages;
                 }
             }
+        }
+
+        private static XDocument LoadDocumentationForAssembly(string assemblyFile)
+        {
+            string documentationFile = Path.ChangeExtension(assemblyFile, ".xml");
+            if (!File.Exists(documentationFile))
+                return null;
+
+            return XDocument.Load(documentationFile);
         }
 
         public static StrongNameKeyPair GenerateStrongNameKeyPair()

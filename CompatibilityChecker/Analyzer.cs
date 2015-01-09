@@ -1,18 +1,21 @@
 ﻿namespace CompatibilityChecker
 {
     using System;
-    using System.Collections.Generic;
     using System.Collections.Immutable;
     using System.Linq;
     using System.Reflection;
     using System.Reflection.Metadata;
     using System.Reflection.PortableExecutable;
+    using System.Xml.Linq;
+    using System.Xml.XPath;
     using CompatibilityChecker.Descriptors;
 
     public class Analyzer
     {
         private readonly PEReader _referenceAssembly;
+        private readonly XDocument _referenceDocumentation;
         private readonly PEReader _newAssembly;
+        private readonly XDocument _newDocumentation;
         private readonly IMessageLogger _logger;
 
         private MetadataReader _referenceMetadata;
@@ -21,10 +24,12 @@
         private MetadataMapping _referenceToNewMapping;
         private MetadataMapping _newToReferenceMapping;
 
-        public Analyzer(PEReader referenceAssembly, PEReader newAssembly, IMessageLogger logger)
+        public Analyzer(PEReader referenceAssembly, XDocument referenceDocumentation, PEReader newAssembly, XDocument newDocumentation, IMessageLogger logger)
         {
             _referenceAssembly = referenceAssembly;
+            _referenceDocumentation = referenceDocumentation ?? new XDocument();
             _newAssembly = newAssembly;
+            _newDocumentation = newDocumentation ?? new XDocument();
             _logger = logger ?? new ConsoleMessageLogger();
         }
 
@@ -47,7 +52,7 @@
                 if (!IsPubliclyVisible(referenceMetadata, typeDefinition))
                     continue;
 
-                if (IsMarkedPreliminary(referenceMetadata, typeDefinition))
+                if (IsMarkedPreliminary(referenceMetadata, _referenceDocumentation, typeDefinition))
                     continue;
 
                 Mapping<TypeDefinitionHandle> typeMapping = _referenceToNewMapping.MapTypeDefinition(typeDefinitionHandle);
@@ -82,7 +87,7 @@
                 if ((typeDefinition.Attributes & uncheckedAttributesMask) != (newTypeDefinition.Attributes & uncheckedAttributesMask))
                     throw new NotImplementedException("Attributes of publicly visible type changed.");
 
-                if (IsMarkedPreliminary(newMetadata, newTypeDefinition))
+                if (IsMarkedPreliminary(newMetadata, _newDocumentation, newTypeDefinition))
                     throw new NotImplementedException("Publicly visible type changed from stable to preliminary.");
 
                 // check base type
@@ -450,6 +455,9 @@
             {
                 string namespaceName = metadataReader.GetString(typeDefinition.Namespace);
                 string typeName = metadataReader.GetString(typeDefinition.Name);
+                if (string.IsNullOrEmpty(namespaceName))
+                    return typeName;
+
                 return string.Format("{0}.{1}", namespaceName, typeName);
             }
             else
@@ -1063,9 +1071,23 @@
             return false;
         }
 
-        private bool IsMarkedPreliminary(MetadataReader metadataReader, TypeDefinition typeDefinition)
+        private bool IsMarkedPreliminary(MetadataReader metadataReader, XDocument documentation, TypeDefinition typeDefinition)
         {
+            string documentationName = GetDocumentationName(metadataReader, typeDefinition);
+            if (documentationName.IndexOf('"') >= 0)
+                throw new NotImplementedException();
+
+            if (documentation.XPathSelectElements("/doc/members/member[@name=\"" + documentationName + "\"]/preliminary").Any())
+            {
+                return true;
+            }
+
             return false;
+        }
+
+        private string GetDocumentationName(MetadataReader metadataReader, TypeDefinition typeDefinition)
+        {
+            return "T:" + GetMetadataName(metadataReader, typeDefinition).Replace('+', '.');
         }
     }
 }
