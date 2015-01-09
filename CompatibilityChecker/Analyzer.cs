@@ -185,51 +185,22 @@
                 }
 
                 // check methods
-                foreach (var methodDefinition in typeDefinition.GetMethods().Select(referenceMetadata.GetMethodDefinition))
+                foreach (var methodDefinitionHandle in typeDefinition.GetMethods())
                 {
+                    var methodDefinition = referenceMetadata.GetMethodDefinition(methodDefinitionHandle);
                     if (!IsPubliclyVisible(referenceMetadata, methodDefinition))
                         continue;
 
-                    string referenceName = referenceMetadata.GetString(methodDefinition.Name);
-
-                    List<MethodDefinition> newMethodDefinitions = new List<MethodDefinition>();
-                    foreach (var newMethodDefinition in newTypeDefinition.GetMethods().Select(newMetadata.GetMethodDefinition))
-                    {
-                        string newName = newMetadata.GetString(newMethodDefinition.Name);
-                        if (!string.Equals(referenceName, newName, StringComparison.Ordinal))
-                            continue;
-
-                        // filter on number of generic parameters
-                        if (methodDefinition.GetGenericParameters().Count != newMethodDefinition.GetGenericParameters().Count)
-                            continue;
-
-                        // filter on number of parameters
-                        if (methodDefinition.GetParameters().Count != newMethodDefinition.GetParameters().Count)
-                            continue;
-
-                        newMethodDefinitions.Add(newMethodDefinition);
-                    }
-
-                    bool foundMethodDefinition = false;
-                    foreach (var newMethodDefinition in newMethodDefinitions)
-                    {
-                        MethodSignature referenceSignatureReader = referenceMetadata.GetSignature(methodDefinition);
-                        MethodSignature newSignatureReader = newMetadata.GetSignature(newMethodDefinition);
-                        if (!IsSameMethodSignature(referenceMetadata, newMetadata, referenceSignatureReader, newSignatureReader))
-                            continue;
-
-                        if (methodDefinition.Attributes != newMethodDefinition.Attributes)
-                            throw new NotImplementedException("Attributes of publicly-visible method changed.");
-
-                        foundMethodDefinition = true;
-                        break;
-                    }
-
-                    if (!foundMethodDefinition)
+                    Mapping<MethodDefinitionHandle> methodMapping = _referenceToNewMapping.MapMethodDefinition(methodDefinitionHandle);
+                    if (methodMapping.Target.IsNil)
                     {
                         _logger.Report(MemberMustNotBeRemoved.CreateMessage(MemberTypes.Method, GetMetadataName(referenceMetadata, methodDefinition)));
                         continue;
                     }
+
+                    MethodDefinition newMethodDefinition = newMetadata.GetMethodDefinition(methodMapping.Target);
+                    if (methodDefinition.Attributes != newMethodDefinition.Attributes)
+                        throw new NotImplementedException("Attributes of publicly-visible method changed.");
                 }
 
                 // If the type is an interface, additionally make sure the number of methods did not change.

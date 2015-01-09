@@ -2,6 +2,7 @@
 {
     using System;
     using System.Collections.Concurrent;
+    using System.Collections.Generic;
     using System.Collections.Immutable;
     using System.Linq;
     using System.Reflection.Metadata;
@@ -546,6 +547,68 @@
             return CompareTypeSignatures(sourceSignature.Type, targetSignature.Type);
         }
 
+        private string CompareMethodSignatures(MethodSignature sourceSignature, MethodSignature targetSignature)
+        {
+            if (sourceSignature.Header.Attributes != targetSignature.Header.Attributes)
+                return "Different signature attributes";
+
+            if (sourceSignature.Header.CallingConvention != targetSignature.Header.CallingConvention)
+                return "Different calling conventions";
+
+            if (sourceSignature.Header.IsGeneric)
+            {
+                if (sourceSignature.GenericParameterCount != targetSignature.GenericParameterCount)
+                    return "Different number of generic type parameters";
+            }
+
+            string returnTypeResult = CompareReturnTypeSignatures(sourceSignature.ReturnType, targetSignature.ReturnType);
+            if (returnTypeResult != null)
+                return returnTypeResult;
+
+            ImmutableArray<ParameterSignature> sourceParameters = sourceSignature.Parameters;
+            ImmutableArray<ParameterSignature> targetParameters = targetSignature.Parameters;
+            if (sourceParameters.Length != targetParameters.Length)
+                return "Different number of parameters";
+
+            for (int i = 0; i < sourceParameters.Length; i++)
+            {
+                if (!sourceParameters[i].CustomModifiers.IsEmpty || !targetParameters[i].CustomModifiers.IsEmpty)
+                    throw new NotImplementedException();
+
+                if (sourceParameters[i].IsByRef != targetParameters[i].IsByRef)
+                    return "'ref' cannot change";
+
+                string typeResult = CompareTypeSignatures(sourceParameters[i].Type, targetParameters[i].Type);
+                if (typeResult != null)
+                    return typeResult;
+            }
+
+            return null;
+        }
+
+        private string CompareReturnTypeSignatures(ReturnTypeSignature sourceSignature, ReturnTypeSignature targetSignature)
+        {
+            if (!sourceSignature.CustomModifiers.IsEmpty || !targetSignature.CustomModifiers.IsEmpty)
+                throw new NotImplementedException();
+
+            if (sourceSignature.IsByRef != targetSignature.IsByRef)
+                return "'ref' cannot change";
+
+            if (sourceSignature.IsTypedByRef != targetSignature.IsTypedByRef)
+                return "typedbyref cannot change";
+
+            if (sourceSignature.IsVoid != targetSignature.IsVoid)
+                return "void cannot change";
+
+            if (sourceSignature.IsVoid)
+            {
+                // no need to compare type signatures
+                return null;
+            }
+
+            return CompareTypeSignatures(sourceSignature.Type, targetSignature.Type);
+        }
+
         private string CompareTypeSignatures(TypeSignature sourceSignature, TypeSignature targetSignature)
         {
             if (sourceSignature.TypeCode != targetSignature.TypeCode)
@@ -670,7 +733,41 @@
 
         private Mapping<MethodDefinitionHandle> MapMethodDefinitionImpl(MethodDefinitionHandle handle)
         {
-            throw new NotImplementedException();
+            MethodDefinition methodDefinition = _sourceMetadata.GetMethodDefinition(handle);
+
+            // Map the parent
+            Mapping<TypeDefinitionHandle> declaringTypeMapping = MapTypeDefinition(methodDefinition.GetDeclaringType());
+            if (declaringTypeMapping.Target.IsNil)
+                return new Mapping<MethodDefinitionHandle>();
+
+            string methodName = _sourceMetadata.GetString(methodDefinition.Name);
+
+            var candidateTargets = ImmutableArray.CreateBuilder<MethodDefinitionHandle>();
+            var candidateReasons = ImmutableArray.CreateBuilder<string>();
+
+            TypeDefinition targetDeclaringType = _targetMetadata.GetTypeDefinition(declaringTypeMapping.Target);
+            foreach (var targetHandle in targetDeclaringType.GetMethods())
+            {
+                var targetMethod = _targetMetadata.GetMethodDefinition(targetHandle);
+                if (!_targetMetadata.StringComparer.Equals(targetMethod.Name, methodName))
+                    continue;
+
+                // The name matches. If the signature matches, return in Target.
+                MethodSignature sourceSignature = _sourceMetadata.GetSignature(methodDefinition);
+                MethodSignature targetSignature = _targetMetadata.GetSignature(targetMethod);
+                string candidateReason = CompareMethodSignatures(sourceSignature, targetSignature);
+                if (candidateReason == null)
+                    return new Mapping<MethodDefinitionHandle>(targetHandle);
+
+                candidateTargets.Add(targetHandle);
+                candidateReasons.Add(candidateReason);
+            }
+
+            // No corresponding method was located.
+            if (candidateTargets.Count == 0)
+                return new Mapping<MethodDefinitionHandle>();
+
+            return new Mapping<MethodDefinitionHandle>(candidateTargets.ToImmutable(), candidateReasons.ToImmutable());
         }
 
         private Mapping<MethodImplementationHandle> MapMethodImplementationImpl(MethodImplementationHandle handle)
@@ -700,7 +797,38 @@
 
         private Mapping<ParameterHandle> MapParameterImpl(ParameterHandle handle)
         {
-            throw new NotImplementedException();
+            Parameter parameter = _sourceMetadata.GetParameter(handle);
+
+            var sourceMethods = new List<MethodDefinitionHandle>();
+
+            // this is definitely not efficient...
+            foreach (var methodDefinitionHandle in _sourceMetadata.MethodDefinitions)
+            {
+                var methodDefinition = _sourceMetadata.GetMethodDefinition(methodDefinitionHandle);
+                if (!methodDefinition.GetParameters().Contains(handle))
+                    continue;
+
+                sourceMethods.Add(methodDefinitionHandle);
+            }
+
+            if (sourceMethods.Count != 1)
+                throw new NotImplementedException();
+
+            Mapping<MethodDefinitionHandle> methodMapping = MapMethodDefinition(sourceMethods[0]);
+            if (methodMapping.Target.IsNil)
+                throw new NotImplementedException();
+
+            MethodDefinition newMethodDefinition = _targetMetadata.GetMethodDefinition(methodMapping.Target);
+            foreach (var newParameterHandle in newMethodDefinition.GetParameters())
+            {
+                var newParameter = _targetMetadata.GetParameter(newParameterHandle);
+                // do we need to check anything other than sequence number?
+                if (parameter.SequenceNumber == newParameter.SequenceNumber)
+                    return new Mapping<ParameterHandle>(newParameterHandle);
+            }
+
+            // no corresponding parameter was found
+            return new Mapping<ParameterHandle>();
         }
 
         private Mapping<PropertyDefinitionHandle> MapPropertyDefinitionImpl(PropertyDefinitionHandle handle)
@@ -753,7 +881,34 @@
 
         private Mapping<TypeReferenceHandle> MapTypeReferenceImpl(TypeReferenceHandle handle)
         {
-            throw new NotImplementedException();
+            TypeReference typeReference = _sourceMetadata.GetTypeReference(handle);
+
+            string referenceName = _sourceMetadata.GetString(typeReference.Name);
+            string referenceNamespace = _sourceMetadata.GetString(typeReference.Namespace);
+
+            var candidateTargets = ImmutableArray.CreateBuilder<TypeReferenceHandle>(1);
+            foreach (var targetTypeReferenceHandle in _targetMetadata.TypeReferences)
+            {
+                var targetTypeReference = _targetMetadata.GetTypeReference(targetTypeReferenceHandle);
+
+                if (!_targetMetadata.StringComparer.Equals(targetTypeReference.Name, referenceName))
+                    continue;
+
+                if (!_targetMetadata.StringComparer.Equals(targetTypeReference.Namespace, referenceNamespace))
+                    continue;
+
+                // TODO: compare resolution scopes
+
+                candidateTargets.Add(targetTypeReferenceHandle);
+            }
+
+            if (candidateTargets.Count > 1)
+                throw new NotImplementedException();
+
+            if (candidateTargets.Count == 0)
+                return new Mapping<TypeReferenceHandle>();
+
+            return new Mapping<TypeReferenceHandle>(candidateTargets[0]);
         }
 
         private Mapping<TypeSpecificationHandle> MapTypeSpecificationImpl(TypeSpecificationHandle handle)
